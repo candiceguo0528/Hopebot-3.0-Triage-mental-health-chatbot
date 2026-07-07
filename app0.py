@@ -14,16 +14,9 @@ from dotenv import load_dotenv
 import base64
 import streamlit as st
 import openai
-from langchain_community.chat_models import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
-from langchain_core.messages import HumanMessage, AIMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain.prompts import ChatPromptTemplate
-from langchain.chains import LLMChain
-from langchain_core.runnables import RunnablePassthrough
 from langchain_community.document_loaders import TextLoader
 import chardet
 import sys
@@ -58,7 +51,46 @@ if not openai_api_key:
     st.stop()
 
 openai.api_key = openai_api_key
-openai_chat_model = st.secrets.get("OPENAI_CHAT_MODEL", os.getenv("OPENAI_CHAT_MODEL", "gpt-4o"))
+os.environ["OPENAI_API_KEY"] = openai_api_key
+openai_client = OpenAI(api_key=openai_api_key)
+openai_chat_model = st.secrets.get("OPENAI_CHAT_MODEL", os.getenv("OPENAI_CHAT_MODEL", "gpt-5.5"))
+
+SYSTEM_PROMPT = """
+You are HopeBot, a patient, respectful, and professional mental health counsellor. Your responses are spoken aloud, so keep them warm, natural, concise, and conversational. Do not sound like a menu or a triage bot.
+
+You must guide the conversation through three stages while preserving natural flow:
+
+Stage 1 - supportive conversation:
+- Begin with warmth and listen like a counsellor. Reflect the user's feelings and ask one gentle follow-up question at a time.
+- Keep this stage within 15 user turns maximum. Do not artificially stretch the conversation.
+- If the user says they do not want to talk, have nothing to share, are done, or gives very minimal replies, give one low-pressure invitation to share a little more. If they still do not want to talk, naturally ask whether they would be willing to do a brief screening questionnaire.
+- If the user clearly shows depression, anxiety, or manic/hypomanic tendency, remember that tendency, but still finish the first-stage conversation naturally before recommending the relevant scale.
+- If symptoms are mixed or unclear, do not force a recommendation. Briefly explain the three options and ask which feels most relevant.
+
+Stage 2 - scale selection and questionnaire:
+- The available scales are PHQ-9 for depression symptoms, GAD-7 for anxiety symptoms, and MDQ for manic or hypomanic symptoms.
+- If depression is the clearest signal, recommend PHQ-9. If anxiety is clearest, recommend GAD-7. If manic/hypomanic symptoms are clearest, recommend MDQ.
+- If the user asks whether they must do it, explain that it is optional and can help clarify support. Ask for consent naturally.
+- Once the user chooses or agrees to a scale, ask the scale questions one at a time and in order.
+- For PHQ-9 and GAD-7, classify answers as 0 = not at all, 1 = several days, 2 = more than half the days, 3 = nearly every day.
+- For MDQ, classify each symptom item as 0 = no or 1 = yes.
+- If the user says they do not know, are unsure, or do not understand a question, explain the wording and help them choose the closest answer. If you summarize their meaning, ask them to confirm before scoring.
+- Do not reveal the running score while the questionnaire is ongoing.
+
+Stage 3 - results:
+- After all items are answered, summarize how each answer was interpreted, give the total score, explain the severity/range, and give brief supportive next steps.
+- Be clear that you are a virtual mental health assistant, not a doctor, and this is not a diagnosis or a substitute for professional care.
+- If risk or severe symptoms appear, encourage professional support and urgent help if they cannot stay safe.
+
+Hidden JSON for app scoring:
+When and only when you have just classified a questionnaire item response, append one final separate line exactly like this:
+###JSON_START###{"scale_id":"phq9|gad7|mdq","question_index":1,"answer_label":"not at all|several days|more than half the days|nearly every day|yes|no","score":0}###JSON_END###
+Use 1-based question_index. For PHQ-9 and GAD-7 score must be 0, 1, 2, or 3. For MDQ score must be 0 or 1. Never output this JSON outside questionnaire item classification turns.
+
+Use this runtime context and retrieved background material to guide the response:
+
+{context}
+"""
 
 
 def detect_file_encoding(file_path: Path) -> str:
@@ -94,12 +126,6 @@ def load_or_create_vectorstore(source_file: str, persist_dir_name: str, collecti
 # Function to initialize resources
 @st.cache_resource
 def initialize_resources():
-    # Chat model
-    chat = ChatOpenAI(
-        model=openai_chat_model,
-        temperature=0.2,
-    )
-
     # Embedding model
     embed_model = OpenAIEmbeddings()
 
@@ -129,56 +155,10 @@ def initialize_resources():
     retriever2 = vectorstore2.as_retriever(k=2)
     retriever3 = vectorstore3.as_retriever(k=2)
 
-    # ChatPromptTemplate
-    question_answering_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", """
-You are HopeBot, a patient, respectful, and professional mental health counsellor. Your responses are spoken aloud, so keep them warm, natural, concise, and conversational. Do not sound like a menu or a triage bot.
-
-You must guide the conversation through three stages while preserving natural flow:
-
-Stage 1 - supportive conversation:
-- Begin with warmth and listen like a counsellor. Reflect the user's feelings and ask one gentle follow-up question at a time.
-- Keep this stage within 15 user turns maximum. Do not artificially stretch the conversation.
-- If the user says they do not want to talk, have nothing to share, are done, or gives very minimal replies, give one low-pressure invitation to share a little more. If they still do not want to talk, naturally ask whether they would be willing to do a brief screening questionnaire.
-- If the user clearly shows depression, anxiety, or manic/hypomanic tendency, remember that tendency, but still finish the first-stage conversation naturally before recommending the relevant scale.
-- If symptoms are mixed or unclear, do not force a recommendation. Briefly explain the three options and ask which feels most relevant.
-
-Stage 2 - scale selection and questionnaire:
-- The available scales are PHQ-9 for depression symptoms, GAD-7 for anxiety symptoms, and MDQ for manic or hypomanic symptoms.
-- If depression is the clearest signal, recommend PHQ-9. If anxiety is clearest, recommend GAD-7. If manic/hypomanic symptoms are clearest, recommend MDQ.
-- If the user asks whether they must do it, explain that it is optional and can help clarify support. Ask for consent naturally.
-- Once the user chooses or agrees to a scale, ask the scale questions one at a time and in order.
-- For PHQ-9 and GAD-7, classify answers as 0 = not at all, 1 = several days, 2 = more than half the days, 3 = nearly every day.
-- For MDQ, classify each symptom item as 0 = no or 1 = yes.
-- If the user says they do not know, are unsure, or do not understand a question, explain the wording and help them choose the closest answer. If you summarize their meaning, ask them to confirm before scoring.
-- Do not reveal the running score while the questionnaire is ongoing.
-
-Stage 3 - results:
-- After all items are answered, summarize how each answer was interpreted, give the total score, explain the severity/range, and give brief supportive next steps.
-- Be clear that you are a virtual mental health assistant, not a doctor, and this is not a diagnosis or a substitute for professional care.
-- If risk or severe symptoms appear, encourage professional support and urgent help if they cannot stay safe.
-
-Hidden JSON for app scoring:
-When and only when you have just classified a questionnaire item response, append one final separate line exactly like this:
-###JSON_START###{{"scale_id":"phq9|gad7|mdq","question_index":1,"answer_label":"not at all|several days|more than half the days|nearly every day|yes|no","score":0}}###JSON_END###
-Use 1-based question_index. For PHQ-9 and GAD-7 score must be 0, 1, 2, or 3. For MDQ score must be 0 or 1. Never output this JSON outside questionnaire item classification turns.
-
-Use this runtime context and retrieved background material to guide the response:
-
-{context}
-            """),
-            MessagesPlaceholder(variable_name="messages"),
-        ]
-    )
-    # Create the LLM chain with the language model and the prompt
-    document_chain = LLMChain(llm=chat, prompt=question_answering_prompt)
-
-    # Return all initialized resources
-    return chat, retriever1, retriever2, retriever3, question_answering_prompt, document_chain
+    return retriever1, retriever2, retriever3
 
 # Initialize resources (runs once and caches results)
-chat, retriever1, retriever2, retriever3, question_answering_prompt, document_chain = initialize_resources()
+retriever1, retriever2, retriever3 = initialize_resources()
 JSON_START = "###JSON_START###"
 JSON_END = "###JSON_END###"
 def extract_screening_score(text: str):
@@ -233,23 +213,32 @@ def record_screening_score(score_data):
     st.session_state.screening_scores[scale_id] = st.session_state.screening_scores.get(scale_id, 0) + score
 
 
-def build_chat_history(messages):
-    chat_history = ChatMessageHistory()
-    for message in messages:
-        if message["role"] == "user":
-            chat_history.add_message(HumanMessage(content=message["content"]))
-        else:
-            chat_history.add_message(AIMessage(content=message["content"]))
-    return chat_history
+def build_response_messages(messages):
+    response_messages = []
+    for item in messages:
+        role = item.get("role", "user")
+        if role not in {"assistant", "user"}:
+            role = "user"
+        response_messages.append({"role": role, "content": item.get("content", "")})
+    return response_messages
+
+
+def extract_response_text(response):
+    if getattr(response, "output_text", None):
+        return response.output_text
+    texts = []
+    for output in getattr(response, "output", []) or []:
+        for content in getattr(output, "content", []) or []:
+            text = getattr(content, "text", None)
+            if text:
+                texts.append(text)
+    return "\n".join(texts).strip()
 
 
 # Function to process input and return the chatbot's response
 def get_assistant_response(messages, stage_context=""):
     # Extract the user's last message (the latest user input)
     user_input = messages[-1]["content"]
-
-    # Simulate chat history
-    chat_history = build_chat_history(messages)
 
     # Retrieve documents based on user input
     retriever_context = user_input  # Use user input as the query for document retrieval
@@ -261,16 +250,22 @@ def get_assistant_response(messages, stage_context=""):
     retrieved_context = "\n".join([doc.page_content for doc in retrieved_docs1 + retrieved_docs2 + retrieved_docs3])
     combined_context = f"{stage_context}\n\nRetrieved support material:\n{retrieved_context}".strip()
 
-    # Generate chatbot response with retrieved context
-    response = document_chain.run(
-        {
-            "context": combined_context,  # Documents retrieved from retrievers
-            "messages": chat_history.messages  # Conversation history
-        }
-    )
+    system_prompt = SYSTEM_PROMPT.replace("{context}", combined_context)
+    try:
+        response = openai_client.responses.create(
+            model=openai_chat_model,
+            instructions=system_prompt,
+            input=build_response_messages(messages),
+        )
+    except openai.BadRequestError:
+        st.error(
+            f"OpenAI rejected the request for model '{openai_chat_model}'. "
+            "Check that your API project has access to this model, or set OPENAI_CHAT_MODEL to another supported model."
+        )
+        return "I am sorry, I could not connect to the selected OpenAI model. Please check the app model setting and try again."
 
     # Return the assistant's response
-    return response
+    return extract_response_text(response)
 
 
 def speech_to_text(audio_data):

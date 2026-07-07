@@ -13,8 +13,8 @@ Create `.streamlit/secrets.toml` locally:
 
 ```toml
 OPENAI_API_KEY = "your-openai-api-key"
-# Optional. Defaults to gpt-4o if omitted.
-OPENAI_CHAT_MODEL = "gpt-4o"
+# Optional. Defaults to gpt-5.5 if omitted.
+OPENAI_CHAT_MODEL = "gpt-5.5"
 ```
 
 Do not commit `.streamlit/secrets.toml`.
@@ -28,11 +28,11 @@ Do not commit `.streamlit/secrets.toml`.
 
 ```toml
 OPENAI_API_KEY = "your-openai-api-key"
-# Optional. Defaults to gpt-4o if omitted.
-OPENAI_CHAT_MODEL = "gpt-4o"
+# Optional. Defaults to gpt-5.5 if omitted.
+OPENAI_CHAT_MODEL = "gpt-5.5"
 ```
 
-The Chroma vector stores are rebuilt from the source text files on first startup if the persisted local database folders are not present.
+The Chroma vector stores are rebuilt from the source text files on first startup if the persisted local database folders are not present. Chat responses use the OpenAI Responses API so GPT-5.5 can be used directly.
 
 ## Notes
 
