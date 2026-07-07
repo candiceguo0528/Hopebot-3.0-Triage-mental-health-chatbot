@@ -58,6 +58,7 @@ if not openai_api_key:
     st.stop()
 
 openai.api_key = openai_api_key
+openai_chat_model = st.secrets.get("OPENAI_CHAT_MODEL", os.getenv("OPENAI_CHAT_MODEL", "gpt-4o"))
 
 
 def detect_file_encoding(file_path: Path) -> str:
@@ -95,7 +96,7 @@ def load_or_create_vectorstore(source_file: str, persist_dir_name: str, collecti
 def initialize_resources():
     # Chat model
     chat = ChatOpenAI(
-        model="gpt-5.5",
+        model=openai_chat_model,
         temperature=0.2,
     )
 

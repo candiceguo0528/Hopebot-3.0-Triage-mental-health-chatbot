@@ -13,6 +13,8 @@ Create `.streamlit/secrets.toml` locally:
 
 ```toml
 OPENAI_API_KEY = "your-openai-api-key"
+# Optional. Defaults to gpt-4o if omitted.
+OPENAI_CHAT_MODEL = "gpt-4o"
 ```
 
 Do not commit `.streamlit/secrets.toml`.
@@ -26,6 +28,8 @@ Do not commit `.streamlit/secrets.toml`.
 
 ```toml
 OPENAI_API_KEY = "your-openai-api-key"
+# Optional. Defaults to gpt-4o if omitted.
+OPENAI_CHAT_MODEL = "gpt-4o"
 ```
 
 The Chroma vector stores are rebuilt from the source text files on first startup if the persisted local database folders are not present.
